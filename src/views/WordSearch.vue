@@ -5,56 +5,40 @@
     <section>
       Puzzle:
       <textarea v-model="puzzle" rows="10" cols="120"> </textarea>
-      Dictionary
-      <select v-model="dictionary">
-        <option v-for="option in dictionaries" :key="option">
-          {{ option }}
-        </option>
-      </select>
+      <WordListSelector v-model="wordList" />
       Min length: <input type="number" v-model="minLength" />
       <button @click="render">Test</button>
       <button @click="search">Search</button>
     </section>
-    <canvas ref="canvas" class="output-canvas"> </canvas>
-    <ul>
-      <li v-for="(word, windex) in foundWords" :key="windex">
+    <p class="output">
+    <svg xmlns="http://www.w3.org/2000/svg" ref="svg" class="output-svg" />
+    <ol class="anagrams-list">
+      <li v-for="(word, windex) in foundWords" :key="windex" :class="`found-word--${windex % 10}`">
         {{ word.word }} ({{ word.x }}, {{ word.y }} - {{ word.direction }})
       </li>
-    </ul>
+    </ol>
+    </p>
   </div>
 </template>
 
 <script lang="ts">
+import { ArrayDictionary, getAllWords, WordList } from "../shared";
+import { createSvgElement } from "../svg";
+import WordListSelector from "../components/WordListSelector.vue";
 const CANVAS_START_X = 20;
 const CANVAS_START_Y = 20;
 const CANVAS_DX = 20;
-const CANVAS_DY = 20;
+const CANVAS_DY = 22;
+const LETTER_WIDTH = 12;
+const LETTER_HEIGHT = 16;
+const PADDING_X = 3;
+const PADDING_Y = 3;
 
 const sample = `A P P L E Z
  Z E E Z Z Z
  Z A Z A Z Z
  Z R Z Z C Z
  Z Z Z Z Z H`;
-
-interface Searcher {
-  containsRoot(text: string): boolean;
-  containsWord(word: string): boolean;
-}
-
-class ArraySearcher implements Searcher {
-  array: string[];
-  constructor(array: string[]) {
-    this.array = array;
-  }
-
-  containsRoot(text) {
-    return this.array.some((w) => w.startsWith(text));
-  }
-
-  containsWord(text) {
-    return this.array.includes(text);
-  }
-}
 
 type DirectionKey = "N" | "NE" | "E" | "SE" | "S" | "SW" | "W" | "NW";
 
@@ -72,17 +56,17 @@ interface DirectionIterator {
 }
 
 const directions: Record<DirectionKey, DirectionIterator> = {
-  W: {
+  N: {
     dx: 0,
     dy: -1,
     angle: Math.PI,
   },
-  SW: {
+  NE: {
     dx: 1,
     dy: -1,
     angle: (5 * Math.PI) / 4,
   },
-  S: {
+  E: {
     dx: 1,
     dy: 0,
     angle: (3 * Math.PI) / 2,
@@ -92,17 +76,17 @@ const directions: Record<DirectionKey, DirectionIterator> = {
     dy: 1,
     angle: (7 * Math.PI) / 4,
   },
-  E: {
+  S: {
     dx: 0,
     dy: 1,
     angle: 0,
   },
-  NE: {
+  SW: {
     dx: -1,
     dy: 1,
     angle: Math.PI / 4,
   },
-  N: {
+  W: {
     dx: -1,
     dy: 0,
     angle: Math.PI / 2,
@@ -116,10 +100,12 @@ const directions: Record<DirectionKey, DirectionIterator> = {
 
 export default {
   name: "WordSearch",
+  components: {
+    WordListSelector,
+  },
   data() {
     return {
-      dictionary: "US-English",
-      dictionaries: ["US-English", "Custom"],
+      wordList: undefined as undefined | WordList,
       minLength: 3,
       foundWords: [] as FoundWord[],
       puzzle: sample
@@ -133,51 +119,59 @@ export default {
       return this.puzzle.split("\n").map((line) => line.split(/\s+/));
     },
     render() {
-      const canvas = this.$refs.canvas as HTMLCanvasElement;
-      const ctx = canvas.getContext("2d");
-      ctx.font = "20px Courier";
+      const svg = this.$refs.svg as SVGElement;
+      svg.innerHTML = "";
       let x = CANVAS_START_X;
       let y = CANVAS_START_Y;
       this.puzzle.split("\n").forEach((line) => {
         line.split(/\s+/).forEach((letter) => {
-          ctx.fillText(letter, x, y);
+          svg.appendChild(createSvgElement("text", { x, y }, letter));
           x += CANVAS_DX;
         });
         y += CANVAS_DY;
         x = CANVAS_START_X;
       });
-      this.foundWords.forEach((word) => {
-        // draw the half-circle at the end
-        ctx.fillStyle = "rgba(255, 0, 0, 0.2)";
+
+      this.foundWords.forEach((word, index) => {
+        let sx = CANVAS_START_X + word.x * CANVAS_DX - PADDING_X;
+        let sy = CANVAS_START_Y + (word.y - 1) * CANVAS_DY + (LETTER_HEIGHT - PADDING_Y) / 2;
         const dir = directions[word.direction];
-        //  const startAngle = dir.angle + (3 * Math.PI) / 4;
-        let sx = word.y * CANVAS_DX + CANVAS_START_X - CANVAS_DX;
-        let sy = word.x * CANVAS_DY + CANVAS_START_Y;
-        for (let c = 0; c < word.word.length; c++) {
-          ctx.fillRect(sy, sx, CANVAS_DY, CANVAS_DX);
+        word.word.split("").forEach((letter) => {
+          svg.appendChild(
+            createSvgElement("rect", {
+              x: sx,
+              y: sy,
+              width: LETTER_WIDTH + PADDING_X * 2,
+              height: LETTER_HEIGHT + PADDING_Y * 2,
+              class: `found-word--${index}`,
+              rx: 4,
+            })
+          );
           sx += dir.dx * CANVAS_DX;
           sy += dir.dy * CANVAS_DY;
-        }
+        });
       });
+
     },
-    search() {
-      const src = new ArraySearcher(["APPLE", "PEAR"]);
+    async search() {
+      const allWords = await getAllWords(this.wordList);
+      const src = new ArrayDictionary(allWords);
       const grid = this.getGrid();
       const words: FoundWord[] = [];
-      for (let x = 0; x < grid.length; x++) {
-        for (let y = 0; y < grid[x].length; y++) {
+      for (let y = 0; y < grid.length; y++) {
+        for (let x = 0; x < grid[y].length; x++) {
           Object.entries(directions).map(([direction, { dx, dy }]) => {
             let nx = x;
             let ny = y;
             let word = "";
             while (
               src.containsRoot(word) &&
-              nx < grid.length &&
-              nx >= 0 &&
-              ny < grid[nx].length &&
-              ny >= 0
+              ny < grid.length &&
+              ny >= 0 &&
+              nx < grid[ny].length &&
+              nx >= 0
             ) {
-              word += grid[nx][ny];
+              word += grid[ny][nx];
               if (src.containsWord(word)) {
                 words.push({
                   word,
@@ -199,10 +193,57 @@ export default {
 };
 </script>
 
-<style lang="scss" scoped>
-.output-canvas {
+<style lang="scss">
+.output {
+  display: grid;
+  grid: 'svg anagrams'
+    / 400px 1fr;
+}
+.output-svg {
+  grid-area: svg;
   height: 400px;
   width: 400px;
   border: 1px solid gray;
+}
+
+.anagrams-list {
+  grid-area: anagrams;
+  text-align: left;
+  font-family: 'Courier New', Courier, monospace;
+
+  li {
+    padding: 2px;
+    cursor: pointer;
+  }
+
+  li:hover {
+    text-decoration: underline;
+  }
+}
+
+.found-word--0 {
+  background-color: rgba(255, 0, 0, 0.2);
+  fill: rgba(255, 0, 0, 0.2);
+}
+
+.found-word--1 {
+  background-color: rgba(0, 255, 0, 0.2);
+  fill: rgba(0, 255, 0, 0.2);
+}
+
+.found-word--2 {
+  background-color: rgba(0, 0, 255, 0.2);
+  fill: rgba(0, 0, 255, 0.2);
+}
+
+.found-word--3 {
+  background-color: rgba(255, 255, 0, 0.2);
+  fill: rgba(255, 255, 0, 0.2);
+}
+
+text {
+  font-family: "Courier New", Courier, monospace;
+  font-size: 20px;
+  stroke: black;
 }
 </style>

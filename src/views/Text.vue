@@ -20,22 +20,13 @@
       </button>
     </p>
     <section>
-      Transformations:
+      Transformations (click to configure/add):
+      {{ newTransformerName }}
       <ul class="transformers">
         <li v-for="transformer in transformers" :key="transformer.name">
-          {{ transformer.name }}
-          <button
-            v-if="!transformer.isFactory"
-            @click="
-              newTransformerName = transformer.name;
-              addTransformer();
-            "
-          >
-            Add
-          </button>
-          <button v-else @click="newTransformerName = transformer.name">
-            Configure
-          </button>
+          <a @click="startAddTransformer(transformer)" class="transformer-name">
+            {{ transformer.name }}
+          </a>
           <ul v-if="newTransformerName === transformer.name">
             <li
               v-for="[name, type] in Object.entries(transformer.options)"
@@ -51,13 +42,15 @@
       <ul class="transformations">
         <li v-for="(t, tIndex) in transformations" :key="tIndex">
           {{ t.name }}
+          <a @click.stop="deleteTransformer(tIndex)" class="delete-button"
+            >[X]</a
+          >
         </li>
-        <li v-if="transformations.length === 0">
-          No transformations selected.
-        </li>
+        <li v-if="transformations.length === 0">No transformations.</li>
       </ul>
     </section>
     <label for="output-text" class="output-text-label">Output:</label>
+
     <textarea
       class="output-text"
       v-model="output"
@@ -66,16 +59,18 @@
       cols="120"
     >
     </textarea>
+    <button @click="input = output">Copy into Input</button>
   </div>
 </template>
 
 <script lang="ts">
 import { transformVNodeArgs } from "vue";
+import { transform } from "typescript";
 function isLetter(c: string) {
-  return c.toLowerCase() !== c.toUpperCase(); // good enough for ASCII
+  return "ABCDEFGHIJKLMNOPQRSTUVWXYZ".indexOf(c.toUpperCase()) !== -1;
 }
 
-type PHTransformerType = "character" | "full";
+type PHTransformerType = "character" | "full" | "word";
 
 interface PHTransformer {
   name: string;
@@ -98,6 +93,11 @@ interface CharacterTransformer extends PHTransformer {
   transform(context: CharacterTransformationContext): string;
 }
 
+interface WordTransformer extends PHTransformer {
+  type: "word";
+  transform(word: string): string;
+}
+
 interface FullTextTransformer extends PHTransformer {
   type: "full";
   transform(text: string): string;
@@ -106,7 +106,8 @@ interface FullTextTransformer extends PHTransformer {
 class BasePHTransformer implements PHTransformer {
   name: string;
   type: PHTransformerType;
-  constructor(name: string) {
+  constructor(type: PHTransformerType, name: string) {
+    this.type = type;
     this.name = name;
   }
 }
@@ -136,6 +137,35 @@ const removeAllSpacesTransformer: CharacterTransformer = {
   },
 };
 
+const numberToLetterTransformer: WordTransformer = {
+  name: "Numbers to Letters",
+  type: "word",
+  transform(word) {
+    const n = Number(word);
+    if (isFinite(n)) {
+      return "ABCDEFGHIJKLMNOPQRSTUVWXYZ".charAt((n % 26) - 1);
+    } else {
+      return word;
+    }
+  },
+};
+
+const letterToNumberTransformer: CharacterTransformer = {
+  name: "Letters to Numbers",
+  type: "character",
+  transform(context) {
+    if (isLetter(context.character)) {
+      return (
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ".indexOf(context.character.toUpperCase()) +
+        1 +
+        " "
+      );
+    } else {
+      return context.character;
+    }
+  },
+};
+
 class RotNTransformer
   extends BasePHTransformer
   implements CharacterTransformer {
@@ -143,7 +173,7 @@ class RotNTransformer
   n: number;
 
   constructor(options: { n: number }) {
-    super(`Rot ${options.n}`);
+    super("character", `Rot ${options.n}`);
     this.n = options.n;
   }
 
@@ -180,7 +210,7 @@ class GridTransformer extends BasePHTransformer implements FullTextTransformer {
   width: number;
 
   constructor(options: { width: number }) {
-    super(`Grid (${options.width} x N)`);
+    super("full", `Grid (${options.width} x N)`);
     this.width = options.width;
     this.type = "full";
   }
@@ -225,6 +255,8 @@ export default {
         lowercaseTransformer,
         removeAllSpacesTransformer,
         gridTransformerFactory,
+        numberToLetterTransformer,
+        letterToNumberTransformer,
       } as Record<string, PHTransformer | PHTransformerFactory<any>>,
       transformations: [] as PHTransformer[],
     };
@@ -237,6 +269,15 @@ export default {
     },
   },
   methods: {
+    startAddTransformer(t: PHTransformer | PHTransformerFactory<any>) {
+      this.newTransformerName = t.name;
+      if (!(t as PHTransformerFactory<any>).isFactory) {
+        this.addTransformer();
+      }
+    },
+    deleteTransformer(index: number) {
+      this.transformations.splice(index, 1);
+    },
     addTransformer() {
       const tOrTf = Object.entries(this.transformers).find(
         ([, t]) =>
@@ -254,7 +295,6 @@ export default {
         );
       } else {
         transformer = tOrTf[1] as PHTransformer;
-        console.log("Found it");
       }
 
       this.transformations.push(transformer);
@@ -264,22 +304,35 @@ export default {
     runTransformers() {
       this.output = this.transformations.reduce(
         (text: string, transformer: PHTransformer) => {
-          console.log(transformer);
-          if (transformer.type === "character") {
-            const context: CharacterTransformationContext = {
-              character: "",
-            };
-            let buffer = "";
-            for (let i = 0; i < text.length; i++) {
-              context.character = text.charAt(i);
-              buffer += (transformer as CharacterTransformer).transform(
-                context
-              );
-            }
-            return buffer;
-          } else if (transformer.type === "full") {
-            console.log("We have a transformer!", transformer);
-            return (transformer as FullTextTransformer).transform(text);
+          switch (transformer.type) {
+            case "character":
+              const context: CharacterTransformationContext = {
+                character: "",
+              };
+              let buffer = "";
+              for (let i = 0; i < text.length; i++) {
+                context.character = text.charAt(i);
+                buffer += (transformer as CharacterTransformer).transform(
+                  context
+                );
+              }
+              return buffer;
+            case "full":
+              return (transformer as FullTextTransformer).transform(text);
+            case "word":
+              return text
+                .split("\n")
+                .map((line) =>
+                  line
+                    .split(/\s+/)
+                    .map((word) =>
+                      (transformer as WordTransformer).transform(word)
+                    )
+                    .join(" ")
+                )
+                .join("\n");
+            default:
+              throw new Error("invalid type:" + transformer.type);
           }
         },
         this.input
@@ -297,8 +350,31 @@ export default {
 }
 
 .transformations {
-  padding: 0;
+  padding: 8px;
   list-style: none;
   border: 1px solid gray;
+}
+
+.delete-button {
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.delete-button:hover {
+  text-decoration: underline;
+  color: blue;
+}
+
+.transformers {
+  li {
+    padding: 2px;
+  }
+
+  .transformer-name {
+    cursor: pointer;
+    &:hover {
+      color: blue;
+    }
+  }
 }
 </style>
