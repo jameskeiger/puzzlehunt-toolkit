@@ -13,15 +13,19 @@
     >
     </textarea>
     <p>
-      <input type="checkbox" v-model="updateAsTyped" id="updateAsTyped" />
-      <label for="updateAsTyped">Update as you type</label>
       <button :disabled="updateAsTyped" @click="runTransformers">
         Transform Now
       </button>
+      <input
+        class="update-as-you-type-checkbox"
+        type="checkbox"
+        v-model="updateAsTyped"
+        id="updateAsTyped"
+      />
+      <label for="updateAsTyped">Update as you type</label>
     </p>
     <section>
       Transformations (click to configure/add):
-      {{ newTransformerName }}
       <ul class="transformers">
         <li v-for="transformer in transformers" :key="transformer.name">
           <a @click="startAddTransformer(transformer)" class="transformer-name">
@@ -47,6 +51,12 @@
           >
         </li>
         <li v-if="transformations.length === 0">No transformations.</li>
+        <button
+          v-else
+          @click="transformations.splice(0, transformations.length)"
+        >
+          Clear all
+        </button>
       </ul>
     </section>
     <label for="output-text" class="output-text-label">Output:</label>
@@ -86,6 +96,7 @@ interface PHTransformerFactory<T extends PHTransformer> {
 
 interface CharacterTransformationContext {
   character: string;
+  indexInText: number;
 }
 
 interface CharacterTransformer extends PHTransformer {
@@ -177,7 +188,7 @@ class RotNTransformer
     this.n = options.n;
   }
 
-  transform(context) {
+  transform(context: CharacterTransformationContext) {
     if (isLetter(context.character)) {
       let index = context.character.charCodeAt(0) + Number(this.n);
       if (context.character === context.character.toLowerCase()) {
@@ -232,6 +243,7 @@ class GridTransformer extends BasePHTransformer implements FullTextTransformer {
     return temp;
   }
 }
+
 const gridTransformerFactory: PHTransformerFactory<GridTransformer> = {
   name: "Turn space-delimited text into a Grid",
   isFactory: true,
@@ -240,6 +252,69 @@ const gridTransformerFactory: PHTransformerFactory<GridTransformer> = {
     return new GridTransformer(options);
   },
 };
+
+class InsertXEveryYTransformer
+  extends BasePHTransformer
+  implements CharacterTransformer {
+  type: "character";
+  n: number;
+  text: string;
+
+  constructor(options: { n: number; text: string }) {
+    super(
+      "character",
+      `Insert "${options.text}" after every ${options.n} characters`
+    );
+    this.n = options.n;
+    this.text = options.text;
+  }
+
+  transform(context: CharacterTransformationContext) {
+    if ((context.indexInText + 1) % this.n === 0) {
+      return context.character + this.text;
+    } else {
+      return context.character;
+    }
+  }
+}
+
+const insertXEveryYFactory: PHTransformerFactory<InsertXEveryYTransformer> = {
+  name: "Insert text after every N characters ",
+  isFactory: true,
+  options: { text: "text", n: "number" },
+  createTransformer(options: { n: number; text: string }) {
+    return new InsertXEveryYTransformer(options);
+  },
+};
+
+class FunctionTransformer extends BasePHTransformer implements WordTransformer {
+  type: "word";
+  formula: string;
+
+  constructor(options: { formula: string }) {
+    super("word", `Apply "${options.formula}" to each value`);
+    this.formula = options.formula;
+  }
+
+  transform(word: string) {
+    const num = Number(word);
+    if (isFinite(num)) {
+      return eval(`x = ${num}; ${this.formula}`);
+    } else {
+      return eval(`x = ${word}; ${this.formula}`) ?? word;
+    }
+  }
+}
+
+const functionTransformerFactory: PHTransformerFactory<FunctionTransformer> = {
+  name: "Apply a formula to each number (e.g., 'x + 2')",
+  isFactory: true,
+  options: { formula: "text" },
+  createTransformer(options: { formula: string }) {
+    return new FunctionTransformer(options);
+  },
+};
+
 export default {
   name: "Text",
   data() {
@@ -257,6 +332,8 @@ export default {
         gridTransformerFactory,
         numberToLetterTransformer,
         letterToNumberTransformer,
+        insertXEveryYFactory,
+        functionTransformerFactory,
       } as Record<string, PHTransformer | PHTransformerFactory<any>>,
       transformations: [] as PHTransformer[],
     };
@@ -300,21 +377,19 @@ export default {
       this.transformations.push(transformer);
       this.newTransformerName = "";
       this.newTransformerOptions = {};
+      this.runTransformers();
     },
     runTransformers() {
       this.output = this.transformations.reduce(
         (text: string, transformer: PHTransformer) => {
           switch (transformer.type) {
             case "character":
-              const context: CharacterTransformationContext = {
-                character: "",
-              };
               let buffer = "";
               for (let i = 0; i < text.length; i++) {
-                context.character = text.charAt(i);
-                buffer += (transformer as CharacterTransformer).transform(
-                  context
-                );
+                buffer += (transformer as CharacterTransformer).transform({
+                  character: text.charAt(i),
+                  indexInText: i,
+                });
               }
               return buffer;
             case "full":
@@ -347,6 +422,10 @@ export default {
 .output-text-label {
   font-size: 20px;
   display: block;
+}
+
+.update-as-you-type-checkbox {
+  margin-left: 12px;
 }
 
 .transformations {
